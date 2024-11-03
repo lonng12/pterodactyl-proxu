@@ -505,10 +505,12 @@ wings_fqdnask(){
     fi
 }
 
-wings_full(){
+wings_full() {
     if [ "$dist" = "debian" ] || [ "$dist" = "ubuntu" ]; then
+        # Initial system updates and requirements
         apt-get update && apt-get -y install curl tar unzip
-
+        
+        # Check and install Docker if needed
         if ! command -v docker &> /dev/null; then
             curl -sSL https://get.docker.com/ | CHANNEL=stable bash
             systemctl enable --now docker
@@ -516,24 +518,92 @@ wings_full(){
             echo "[!] Docker đã được cài đặt."
         fi
 
+        # Create pterodactyl directory
         if ! mkdir -p /etc/pterodactyl; then
             echo "[!] Đã xảy ra lỗi. Không thể tạo thư mục." >&2
             exit 1
         fi
 
+        # SSL certificate setup if FQDN is provided
         if [ "$WINGS_FQDN_STATUS" = "true" ]; then
             systemctl stop nginx apache2
             apt install -y certbot && certbot certonly --standalone -d $WINGS_FQDN --staple-ocsp --no-eff-email --agree-tos
         fi
 
+        # Install base Wings
         curl -L -o /usr/local/bin/wings "https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_$([[ "$(uname -m)" == "x86_64" ]] && echo "amd64" || echo "arm64")"
         curl -o /etc/systemd/system/wings.service https://raw.githubusercontent.com/guldkage/Pterodactyl-Installer/main/configs/wings.service
         chmod u+x /usr/local/bin/wings
+
+        # Create wings directory and prepare for proxy modifications
+        WINGSDIR="/srv/wings"
+        mkdir -p $WINGSDIR
+        cd $WINGSDIR
+
+        # Download and extract latest wings release for modification
+        echo "[!] Đang tải xuống và giải nén Wings để sửa đổi..."
+        LOCATION=$(curl -s https://api.github.com/repos/pterodactyl/wings/releases/latest \
+        | grep "tag_name" \
+        | awk '{print "https://github.com/pterodactyl/wings/archive/" substr($2, 2, length($2)-3) ".zip"}')
+        curl -L -o wings_latest.zip $LOCATION
+        unzip wings_latest.zip
+
+        # Navigate to wings directory
+        cd wings-*
+
+        # Create directory for SSL certificates
+        mkdir -p /srv/server_certs
+        echo "[!] Đã tạo thư mục chứa SSL certificates tại /srv/server_certs"
+
+        # Install GoLang
+        echo "[!] Đang cài đặt GoLang..."
+        wget https://go.dev/dl/go1.22.1.linux-amd64.tar.gz
+        rm -rf /usr/local/go
+        tar -C /usr/local -xzf go1.22.1.linux-amd64.tar.gz
+        export PATH=$PATH:/usr/local/go/bin
+
+        # Verify Go installation
+        if ! go version; then
+            echo "[!] Lỗi cài đặt GoLang. Vui lòng kiểm tra và thử lại."
+            exit 1
+        fi
+        echo "[!] Đã cài đặt GoLang thành công."
+
+        # Modify router.go to add proxy endpoints
+        echo "[!] Đang thêm các endpoint proxy..."
+        if ! sed -i '/server.POST("\/ws\/deny", postServerDenyWSTokens)/a\\t\tserver.POST("/proxy/create", postServerProxyCreate)\n\t\tserver.POST("/proxy/delete", postServerProxyDelete)' router/router.go; then
+            echo "[!] Không thể sửa đổi file router.go. Vui lòng kiểm tra lại."
+            exit 1
+        fi
+
+        # Build and install modified wings
+        echo "[!] Đang build Wings với các sửa đổi..."
+        systemctl stop wings
+        go get github.com/go-acme/lego/v4
+        go mod tidy
+        if ! go build -o /usr/local/bin/wings; then
+            echo "[!] Lỗi khi build Wings. Vui lòng kiểm tra lại."
+            exit 1
+        fi
+        chmod +x /usr/local/bin/wings
+        systemctl start wings
+
+        # Ensure nginx is installed
+        if [ "$WEBSERVER" = "NGINX" ]; then
+            apt update
+            apt install nginx -y
+        fi
+
         clear
         echo ""
-        echo "[!] Pterodactyl Wings đã được cài đặt thành công."
+        echo "[!] Pterodactyl Wings đã được cài đặt thành công với tính năng proxy."
         echo "    Bạn vẫn cần thiết lập Node"
         echo "    trên Panel và khởi động lại Wings sau."
+        echo ""
+        echo "[!] Các thông tin quan trọng:"
+        echo "    - SSL certificates path: /srv/server_certs"
+        echo "    - Wings source code: /srv/wings"
+        echo "    - Proxy endpoints đã được thêm vào router"
         echo ""
 
         if [ "$INSTALLBOTH" = "true" ]; then
