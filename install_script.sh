@@ -509,7 +509,7 @@ wings_full() {
     if [ "$dist" = "debian" ] || [ "$dist" = "ubuntu" ]; then
         # Initial system updates and requirements
         apt-get update && apt-get -y install curl tar unzip
-        
+
         # Check and install Docker if needed
         if ! command -v docker &> /dev/null; then
             curl -sSL https://get.docker.com/ | CHANNEL=stable bash
@@ -535,21 +535,36 @@ wings_full() {
         curl -o /etc/systemd/system/wings.service https://raw.githubusercontent.com/guldkage/Pterodactyl-Installer/main/configs/wings.service
         chmod u+x /usr/local/bin/wings
 
-        # Create wings directory and prepare for proxy modifications
+        # Create wings directory and prepare for modifications
         WINGSDIR="/srv/wings"
         mkdir -p $WINGSDIR
         cd $WINGSDIR
 
-        # Download and extract latest wings release for modification
-        echo "[!] Đang tải xuống và giải nén Wings để sửa đổi..."
+        # Download and extract latest wings release
+        echo "[!] Đang tải xuống và giải nén Wings..."
         LOCATION=$(curl -s https://api.github.com/repos/pterodactyl/wings/releases/latest \
         | grep "tag_name" \
         | awk '{print "https://github.com/pterodactyl/wings/archive/" substr($2, 2, length($2)-3) ".zip"}')
         curl -L -o wings_latest.zip $LOCATION
         unzip wings_latest.zip
 
-        # Navigate to wings directory
+        # Navigate to wings directory and backup original router files
         cd wings-*
+        echo "[!] Đang sao lưu các file router gốc..."
+        cp -f router/router.go router/router.go.backup
+        cp -f router/router_server_proxy.go router/router_server_proxy.go.backup 2>/dev/null || true
+
+        # Download new router files from your repository
+        echo "[!] Đang tải xuống các file router mới..."
+        curl -L -o router/router.go https://raw.githubusercontent.com/lonng12/pterodactyl-proxu/main/router/router.go
+        curl -L -o router/router_server_proxy.go https://raw.githubusercontent.com/lonng12/pterodactyl-proxu/main/router/router_server_proxy.go
+
+        if [ $? -ne 0 ]; then
+            echo "[!] Lỗi khi tải file router. Đang khôi phục file backup..."
+            cp -f router/router.go.backup router/router.go
+            cp -f router/router_server_proxy.go.backup router/router_server_proxy.go 2>/dev/null || true
+            exit 1
+        fi
 
         # Create directory for SSL certificates
         mkdir -p /srv/server_certs
@@ -568,13 +583,6 @@ wings_full() {
             exit 1
         fi
         echo "[!] Đã cài đặt GoLang thành công."
-
-        # Modify router.go to add proxy endpoints
-        echo "[!] Đang thêm các endpoint proxy..."
-        if ! sed -i '/server.POST("\/ws\/deny", postServerDenyWSTokens)/a\\t\tserver.POST("/proxy/create", postServerProxyCreate)\n\t\tserver.POST("/proxy/delete", postServerProxyDelete)' router/router.go; then
-            echo "[!] Không thể sửa đổi file router.go. Vui lòng kiểm tra lại."
-            exit 1
-        fi
 
         # Build and install modified wings
         echo "[!] Đang build Wings với các sửa đổi..."
@@ -603,7 +611,7 @@ wings_full() {
         echo "[!] Các thông tin quan trọng:"
         echo "    - SSL certificates path: /srv/server_certs"
         echo "    - Wings source code: /srv/wings"
-        echo "    - Proxy endpoints đã được thêm vào router"
+        echo "    - Router files đã được cập nhật với tính năng proxy"
         echo ""
 
         if [ "$INSTALLBOTH" = "true" ]; then
